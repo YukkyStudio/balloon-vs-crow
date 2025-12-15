@@ -12,7 +12,12 @@ body{
   overflow:hidden;
   touch-action:none;
 }
-canvas{display:block;width:100vw;height:100vh}
+canvas{
+  display:block;
+  width:100vw;height:100vh;
+  /* ここを none にすると風船タップが効かなくなるので禁止 */
+  pointer-events:auto;
+}
 
 /* UI（上部中央） */
 #ui{
@@ -47,6 +52,7 @@ canvas{display:block;width:100vw;height:100vh}
   padding:14px 26px;font-size:1.05rem;font-weight:900;
   cursor:pointer;user-select:none;
   box-shadow:0 10px 18px rgba(0,0,0,.30);
+  z-index:20;
 }
 #start-btn{top:50%;transform:translate(-50%,-50%);background:#ff69b4;color:#fff}
 #retry-btn{bottom:20px;background:#fff;color:#111;display:none}
@@ -62,6 +68,7 @@ canvas{display:block;width:100vw;height:100vh}
   background:rgba(0,0,0,0.25);
   backdrop-filter: blur(2px);
   pointer-events:none;
+  z-index:15;
 }
 #result-text{
   font-size:clamp(36px, 8vw, 72px);
@@ -76,6 +83,28 @@ canvas{display:block;width:100vw;height:100vh}
   color:#fff;
   opacity:0.95;
 }
+
+/* コンボ表示は不要なら非表示（必要ならこのブロックを消す） */
+#combo{ display:none; }
+
+/* サウンドボタン */
+#sound-btn{
+  position:absolute;
+  top:20px;
+  right:20px;
+  border:none;
+  border-radius:999px;
+  padding:10px 14px;
+  font-size:0.95rem;
+  font-weight:900;
+  background:rgba(255,255,255,0.85);
+  box-shadow:0 6px 12px rgba(0,0,0,.25);
+  cursor:pointer;
+  user-select:none;
+  z-index:25;
+  pointer-events:auto;
+}
+#sound-btn:active{ transform:translateY(1px); }
 </style>
 </head>
 <body>
@@ -102,6 +131,7 @@ canvas{display:block;width:100vw;height:100vh}
 
 <button id="start-btn">スタート</button>
 <button id="retry-btn">もういちど挑戦！</button>
+<button id="sound-btn">🔊 ON</button>
 
 <script>
 /* ================= Canvas ================= */
@@ -124,6 +154,7 @@ const crowEl = document.getElementById("crowScore");
 const comboEl = document.getElementById("combo");
 const startBtn = document.getElementById("start-btn");
 const retryBtn = document.getElementById("retry-btn");
+const soundBtn = document.getElementById("sound-btn");
 
 const resultEl = document.getElementById("result");
 const resultTextEl = document.getElementById("result-text");
@@ -185,9 +216,9 @@ function darken(hex, f=0.18){
   return `rgb(${Math.max(0,Math.floor(rr*(1-f)))},${Math.max(0,Math.floor(gg*(1-f)))},${Math.max(0,Math.floor(bb*(1-f)))})`;
 }
 
-/* ================= Audio（破裂音） ================= */
+/* ================= Audio（破裂音：元の感じに戻す） ================= */
 const Audio = {
-  ctx:null, master:null,
+  ctx:null, master:null, enabled:true,
   ensure(){
     if(this.ctx) return;
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -202,7 +233,14 @@ const Audio = {
       try { await this.ctx.resume(); } catch(_){}
     }
   },
+  setEnabled(on){
+    this.enabled = on;
+    this.ensure();
+    this.master.gain.value = on ? 0.55 : 0.0;
+  },
+  // ノイズ + ピッチ落下で「破裂っぽい」元の音
   pop(){
+    if(!this.enabled) return;
     this.ensure();
     const t0 = this.ctx.currentTime;
 
@@ -239,7 +277,19 @@ const Audio = {
   }
 };
 
-/* ================= 風船 ================= */
+/* ✅ サウンドボタン（ここが今回の肝） */
+function syncSoundButton(){
+  soundBtn.textContent = Audio.enabled ? "🔊 ON" : "🔇 OFF";
+}
+soundBtn.addEventListener("click", async (e)=>{
+  e.preventDefault();
+  e.stopPropagation();
+  await Audio.unlock();
+  Audio.setEnabled(!Audio.enabled);
+  syncSoundButton();
+});
+
+/* ================= 風船（見た目：元の風船） ================= */
 function createBalloon(mid=true){
   const r = rand(30, 56);
   return {
@@ -269,23 +319,26 @@ function drawBalloon(b){
   ctx.save();
   ctx.translate(b.x, b.y);
 
+  // 本体
   ctx.beginPath();
   ctx.ellipse(0,0,b.r*0.82,b.r,0,0,Math.PI*2);
   ctx.fillStyle = b.col;
   ctx.fill();
 
+  // 輪郭
   ctx.beginPath();
   ctx.ellipse(0,0,b.r*0.82,b.r,0,0,Math.PI*2);
   ctx.strokeStyle = "rgba(0,0,0,0.12)";
   ctx.lineWidth = 3;
   ctx.stroke();
 
+  // ハイライト
   ctx.beginPath();
   ctx.ellipse(-b.r*0.28, -b.r*0.35, b.r*0.18, b.r*0.30, 0, 0, Math.PI*2);
   ctx.fillStyle = "rgba(255,255,255,0.65)";
   ctx.fill();
 
-  // 結び目
+  // 結び目（風船色に合わせて暗く）
   ctx.beginPath();
   ctx.moveTo(0, b.r*0.98);
   ctx.lineTo(-7, b.r*1.16);
@@ -319,7 +372,7 @@ function drawBalloon(b){
   ctx.restore();
 }
 
-/* ================= 破裂エフェクト ================= */
+/* ================= 破裂エフェクト（復活） ================= */
 function spawnPop(x,y,color){
   const particles=[];
   for(let i=0;i<30;i++){
@@ -399,7 +452,7 @@ function showResult(){
   resultEl.style.display = "flex";
 }
 
-/* ================= 割る（誰でもエフェクト出る） ================= */
+/* ================= 割る（誰でもエフェクト＋破裂音） ================= */
 function popBalloon(i, who){
   const b = balloons[i];
   spawnPop(b.x, b.y, b.col);
@@ -419,6 +472,7 @@ function popBalloon(i, who){
 canvas.addEventListener("pointerdown", async (e)=>{
   if(!running) return;
   await Audio.unlock();
+
   const rect = canvas.getBoundingClientRect();
   const x = ((e.clientX - rect.left) / rect.width) * w;
   const y = ((e.clientY - rect.top) / rect.height) * h;
@@ -441,11 +495,8 @@ function drawClock(){
 
   const r = 44;
 
-  // 残り割合（1→0）
   const remain = clamp(timeLeft / GAME_TIME, 0, 1);
   const start = -Math.PI/2;
-
-  // 境界角（時計回りに経過ぶん進む）
   const border = start + Math.PI*2*(1 - remain);
 
   // 白い時計板
@@ -457,7 +508,7 @@ function drawClock(){
   ctx.fill();
   ctx.restore();
 
-  // 残り（灰色）：境界から一周分（残りが減るほど灰色が減る）
+  // 残り（灰色）
   ctx.save();
   ctx.globalAlpha = 0.35;
   ctx.beginPath();
@@ -564,23 +615,27 @@ function drawCrow(){
   ctx.translate(crow.x, crow.y);
   ctx.scale(crow.face, 1);
 
+  // 翼（小さめ・固定で広げてる感じ）
   ctx.fillStyle="#444";
   ctx.beginPath();
   ctx.moveTo(-4,-10);
-  ctx.quadraticCurveTo(-50,-34,-96,-18);
-  ctx.quadraticCurveTo(-46,10,-4,10);
+  ctx.quadraticCurveTo(-44,-28,-86,-16);
+  ctx.quadraticCurveTo(-46,8,-4,10);
   ctx.fill();
 
+  // 胴体
   ctx.beginPath();
   ctx.ellipse(0,0,44,28,0,0,Math.PI*2);
   ctx.fillStyle="#555";
   ctx.fill();
 
+  // 頭
   ctx.beginPath();
   ctx.arc(40,-12,20,0,Math.PI*2);
   ctx.fillStyle="#555";
   ctx.fill();
 
+  // 目
   ctx.save();
   ctx.translate(40,-16);
   ctx.rotate(-0.35);
@@ -594,14 +649,16 @@ function drawCrow(){
   ctx.fill();
   ctx.restore();
 
+  // くちばし（ズレない位置）
   ctx.beginPath();
-  ctx.moveTo(50,-11);
-  ctx.lineTo(82,-3);
-  ctx.lineTo(50,4);
+  ctx.moveTo(52,-11);
+  ctx.lineTo(78,-4);
+  ctx.lineTo(52,3);
   ctx.closePath();
   ctx.fillStyle="#333";
   ctx.fill();
 
+  // しっぽ
   ctx.beginPath();
   ctx.moveTo(-44,2);
   ctx.lineTo(-92,-14);
@@ -647,6 +704,7 @@ function loop(ts){
   updateEffects(dt);
   drawEffects();
 
+  // ✅ タイマー表示（消えていたらここが原因）
   drawClock();
 
   requestAnimationFrame(loop);
@@ -685,7 +743,9 @@ async function startGame(){
 
 startBtn.addEventListener("click", startGame);
 retryBtn.addEventListener("click", startGame);
+
 updateUI();
+syncSoundButton();
 </script>
 </body>
 </html>
