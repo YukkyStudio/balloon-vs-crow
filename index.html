@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>風船わり：あなた vs カラス（完成版）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:linear-gradient(#87ceeb,#ffffff);
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
+  overflow:hidden;
+  touch-action:none;
+}
+canvas{display:block;width:100vw;height:100vh}
+
+/* UI（上部中央） */
+#ui{
+  position:absolute;top:10px;left:0;right:0;
+  display:flex;justify-content:center;pointer-events:none;
+}
+#top-center{display:flex;align-items:center;gap:12px}
+#clock-host{width:110px;height:110px}
+
+/* 黒板 */
+#chalkboard{
+  color:#fff;font-weight:900;
+  padding:10px 14px;border-radius:14px;
+  border:6px solid #6b4b1f;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(255,255,255,.06), transparent 45%),
+    radial-gradient(circle at 70% 70%, rgba(255,255,255,.05), transparent 55%),
+    linear-gradient(135deg,#0b4d36,#083322);
+  box-shadow:0 10px 18px rgba(0,0,0,.25);
+  min-width:260px;
+}
+.score-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.score-box{border:2px solid rgba(255,255,255,.25);border-radius:10px;padding:6px 8px;background:rgba(0,0,0,.10)}
+.label{font-size:.9rem;opacity:.95}
+.value{font-size:1.4rem;text-shadow:0 2px 0 rgba(0,0,0,.35)}
+#combo{margin-top:6px;font-size:.9rem;opacity:.95}
+
+/* ボタン */
+#start-btn,#retry-btn{
+  position:absolute;left:50%;transform:translateX(-50%);
+  border:none;border-radius:999px;
+  padding:14px 26px;font-size:1.05rem;font-weight:900;
+  cursor:pointer;user-select:none;
+  box-shadow:0 10px 18px rgba(0,0,0,.30);
+}
+#start-btn{top:50%;transform:translate(-50%,-50%);background:#ff69b4;color:#fff}
+#retry-btn{bottom:20px;background:#fff;color:#111;display:none}
+
+/* 結果（中央表示） */
+#result{
+  position:absolute;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  flex-direction:column;
+  background:rgba(0,0,0,0.25);
+  backdrop-filter: blur(2px);
+  pointer-events:none;
+}
+#result-text{
+  font-size:clamp(36px, 8vw, 72px);
+  font-weight:900;
+  color:#fff;
+  text-shadow:0 6px 16px rgba(0,0,0,0.55);
+  margin-bottom:12px;
+}
+#result-score{
+  font-size:clamp(18px, 4vw, 28px);
+  font-weight:800;
+  color:#fff;
+  opacity:0.95;
+}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="ui">
+  <div id="top-center">
+    <div id="clock-host"></div>
+    <div id="chalkboard">
+      <div class="score-row">
+        <div class="score-box"><div class="label">あなた</div><div class="value" id="youScore">0</div></div>
+        <div class="score-box"><div class="label">カラス</div><div class="value" id="crowScore">0</div></div>
+      </div>
+      <div id="combo">COMBO: 0<br>倍率: x1</div>
+    </div>
+  </div>
+</div>
+
+<div id="result">
+  <div id="result-text"></div>
+  <div id="result-score"></div>
+</div>
+
+<button id="start-btn">スタート</button>
+<button id="retry-btn">もういちど挑戦！</button>
+
+<script>
+/* ================= Canvas ================= */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let w = innerWidth, h = innerHeight;
+function resize(){
+  w = innerWidth; h = innerHeight;
+  canvas.width = Math.floor(w * devicePixelRatio);
+  canvas.height = Math.floor(h * devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+}
+addEventListener("resize", resize);
+resize();
+
+/* ================= UI ================= */
+const youEl = document.getElementById("youScore");
+const crowEl = document.getElementById("crowScore");
+const comboEl = document.getElementById("combo");
+const startBtn = document.getElementById("start-btn");
+const retryBtn = document.getElementById("retry-btn");
+
+const resultEl = document.getElementById("result");
+const resultTextEl = document.getElementById("result-text");
+const resultScoreEl = document.getElementById("result-score");
+
+/* ================= 設定 ================= */
+const GAME_TIME = 30;
+const BALLOON_COUNT = 36;
+const COMBO_WINDOW = 0.85;
+
+// カラス移動範囲：画面全体（最下まで）
+const SKY_TOP = 20;
+const SKY_BOTTOM = () => h - 40;
+
+const CROW_SPEED = 900;
+const HIT_R = 72;
+
+// 端判定（ここに当たったら方向転換）
+const EDGE_PAD_X = 60;
+const EDGE_PAD_Y = 40;
+
+const balloonColors = ["#ff6b81","#ffdd59","#1e90ff","#2ed573","#ffa502","#a55eea"];
+
+/* ================= 状態 ================= */
+let running = false;
+let timeLeft = GAME_TIME;
+let lastT = 0;
+
+let balloons = [];
+let effects = [];
+
+let you = 0;
+let crowScore = 0;
+
+let combo = 0;
+let mult = 1;
+let lastYouPopAt = -999;
+
+/* ================= util ================= */
+const rand = (a,b)=>Math.random()*(b-a)+a;
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const dist = (x1,y1,x2,y2)=>Math.hypot(x1-x2,y1-y2);
+
+function segHit(x0,y0,x1,y1,cx,cy,r){
+  const vx=x1-x0, vy=y1-y0;
+  const wx=cx-x0, wy=cy-y0;
+  const vv=vx*vx+vy*vy;
+  if(vv < 1e-6) return dist(x0,y0,cx,cy) <= r;
+  let t=(wx*vx+wy*vy)/vv;
+  t=clamp(t,0,1);
+  return dist(x0+t*vx, y0+t*vy, cx, cy) <= r;
+}
+
+function darken(hex, f=0.18){
+  const hh = hex.replace("#","");
+  const rr = parseInt(hh.slice(0,2),16);
+  const gg = parseInt(hh.slice(2,4),16);
+  const bb = parseInt(hh.slice(4,6),16);
+  return `rgb(${Math.max(0,Math.floor(rr*(1-f)))},${Math.max(0,Math.floor(gg*(1-f)))},${Math.max(0,Math.floor(bb*(1-f)))})`;
+}
+
+/* ================= Audio（破裂音） ================= */
+const Audio = {
+  ctx:null, master:null,
+  ensure(){
+    if(this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.55;
+    this.master.connect(this.ctx.destination);
+  },
+  async unlock(){
+    this.ensure();
+    if(this.ctx.state !== "running"){
+      try { await this.ctx.resume(); } catch(_){}
+    }
+  },
+  pop(){
+    this.ensure();
+    const t0 = this.ctx.currentTime;
+
+    const bufferSize = (0.06 * this.ctx.sampleRate) | 0;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for(let i=0;i<bufferSize;i++){
+      data[i] = (Math.random()*2 - 1) * Math.pow(1 - i/bufferSize, 1.5);
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    const nGain = this.ctx.createGain();
+    nGain.gain.setValueAtTime(0.95, t0);
+    nGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.06);
+
+    noise.connect(nGain);
+    nGain.connect(this.master);
+    noise.start(t0);
+    noise.stop(t0 + 0.07);
+
+    const osc = this.ctx.createOscillator();
+    const oGain = this.ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(560, t0);
+    osc.frequency.exponentialRampToValueAtTime(160, t0 + 0.07);
+    oGain.gain.setValueAtTime(0.22, t0);
+    oGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.08);
+
+    osc.connect(oGain);
+    oGain.connect(this.master);
+    osc.start(t0);
+    osc.stop(t0 + 0.09);
+  }
+};
+
+/* ================= 風船 ================= */
+function createBalloon(mid=true){
+  const r = rand(30, 56);
+  return {
+    x: rand(r, w-r),
+    // 画面上に寄せる（上半分にもよく来る）
+    y: mid ? rand(h*0.15, h*0.55) : h + rand(r, h),
+    r,
+    // 上昇速度を約1.3倍
+    sp: rand(52, 124),
+    col: balloonColors[(Math.random()*balloonColors.length)|0],
+    wobbleOffset: Math.random()*Math.PI*2,
+    wobbleSpeed: rand(1.0, 2.8),
+    wobbleAmount: rand(6, 16)
+  };
+}
+function initBalloons(){
+  balloons = [];
+  for(let i=0;i<BALLOON_COUNT;i++) balloons.push(createBalloon(true));
+}
+function updateBalloon(b, dt, elapsed){
+  b.y -= b.sp * dt;
+  b.x += Math.sin(elapsed*b.wobbleSpeed + b.wobbleOffset) * (b.wobbleAmount * dt);
+  if(b.y + b.r < 0) Object.assign(b, createBalloon(false));
+  b.x = clamp(b.x, b.r, w - b.r);
+}
+function drawBalloon(b){
+  ctx.save();
+  ctx.translate(b.x, b.y);
+
+  ctx.beginPath();
+  ctx.ellipse(0,0,b.r*0.82,b.r,0,0,Math.PI*2);
+  ctx.fillStyle = b.col;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.ellipse(0,0,b.r*0.82,b.r,0,0,Math.PI*2);
+  ctx.strokeStyle = "rgba(0,0,0,0.12)";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.ellipse(-b.r*0.28, -b.r*0.35, b.r*0.18, b.r*0.30, 0, 0, Math.PI*2);
+  ctx.fillStyle = "rgba(255,255,255,0.65)";
+  ctx.fill();
+
+  // 結び目
+  ctx.beginPath();
+  ctx.moveTo(0, b.r*0.98);
+  ctx.lineTo(-7, b.r*1.16);
+  ctx.lineTo(7, b.r*1.16);
+  ctx.closePath();
+  ctx.fillStyle = darken(b.col, 0.18);
+  ctx.fill();
+
+  // ふんわり紐
+  const t = performance.now()/600 + b.wobbleOffset;
+  const sway = Math.sin(t) * 10;
+  const sway2 = Math.sin(t*1.7) * 7;
+
+  ctx.beginPath();
+  ctx.moveTo(0, b.r*1.16);
+  ctx.bezierCurveTo(
+    14 + sway, b.r*1.55,
+    -18 + sway2, b.r*2.10,
+    6 + sway*0.4, b.r*2.55
+  );
+  ctx.bezierCurveTo(
+    22 + sway2*0.6, b.r*2.95,
+    -16 + sway*0.6, b.r*3.20,
+    8, b.r*3.55
+  );
+  ctx.strokeStyle = "rgba(40,40,40,0.65)";
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/* ================= 破裂エフェクト ================= */
+function spawnPop(x,y,color){
+  const particles=[];
+  for(let i=0;i<30;i++){
+    const a=Math.random()*Math.PI*2;
+    const sp=rand(170,460);
+    particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,r:rand(2,4.8),life:rand(.24,.58),age:0,col:color});
+  }
+  effects.push({x,y,age:0,life:0.26,particles});
+}
+function updateEffects(dt){
+  const next=[];
+  for(const e of effects){
+    e.age += dt;
+    for(const p of e.particles){
+      p.age += dt;
+      p.x += p.vx*dt;
+      p.y += p.vy*dt;
+      p.vx *= Math.pow(0.001, dt);
+      p.vy *= Math.pow(0.001, dt);
+      p.vy += 460*dt;
+    }
+    const aliveRing = e.age < e.life;
+    const aliveP = e.particles.some(p=>p.age < p.life);
+    if(aliveRing || aliveP) next.push(e);
+  }
+  effects = next;
+}
+function drawEffects(){
+  for(const e of effects){
+    const t = clamp(e.age/e.life, 0, 1);
+    const rr = 10 + t*56;
+
+    ctx.save();
+    ctx.globalAlpha = (1-t) * 0.78;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, rr, 0, Math.PI*2);
+    ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.restore();
+
+    for(const p of e.particles){
+      if(p.age >= p.life) continue;
+      const tt = p.age / p.life;
+      ctx.save();
+      ctx.globalAlpha = 1 - tt;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r*(1-0.35*tt), 0, Math.PI*2);
+      ctx.fillStyle = (tt < 0.55) ? p.col : "rgba(255,255,255,0.95)";
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+/* ================= スコア/コンボ ================= */
+function updateUI(){
+  youEl.textContent = String(you);
+  crowEl.textContent = String(crowScore);
+  comboEl.innerHTML = `COMBO: ${combo}<br>倍率: x${mult}`;
+}
+function updateCombo(nowSec){
+  combo = (nowSec - lastYouPopAt <= COMBO_WINDOW) ? combo + 1 : 1;
+  lastYouPopAt = nowSec;
+  mult = clamp(1 + Math.floor((combo - 1)/3), 1, 6);
+}
+
+/* ================= 結果表示 ================= */
+function showResult(){
+  let text;
+  if(you > crowScore) text = "あなたの勝ち！";
+  else if(you < crowScore) text = "カラスの勝ち！";
+  else text = "引き分け！";
+
+  resultTextEl.textContent = text;
+  resultScoreEl.textContent = `あなた ${you} － ${crowScore} カラス`;
+  resultEl.style.display = "flex";
+}
+
+/* ================= 割る（誰でもエフェクト出る） ================= */
+function popBalloon(i, who){
+  const b = balloons[i];
+  spawnPop(b.x, b.y, b.col);
+  Audio.pop();
+  balloons[i] = createBalloon(false);
+
+  if(who === "you"){
+    updateCombo(performance.now()/1000);
+    you += mult;
+  }else{
+    crowScore += 1;
+  }
+  updateUI();
+}
+
+/* ================= プレイヤー入力 ================= */
+canvas.addEventListener("pointerdown", async (e)=>{
+  if(!running) return;
+  await Audio.unlock();
+  const rect = canvas.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * w;
+  const y = ((e.clientY - rect.top) / rect.height) * h;
+
+  for(let i=0;i<balloons.length;i++){
+    const b = balloons[i];
+    if(dist(x,y,b.x,b.y) < b.r*0.92){
+      popBalloon(i,"you");
+      break;
+    }
+  }
+});
+
+/* ================= タイマー（時計回り／赤針なし） ================= */
+function drawClock(){
+  const host = document.getElementById("clock-host").getBoundingClientRect();
+  const cr = canvas.getBoundingClientRect();
+  const cx = ((host.left + host.width/2) - cr.left) / cr.width * w;
+  const cy = ((host.top  + host.height/2) - cr.top ) / cr.height * h;
+
+  const r = 44;
+
+  // 残り割合（1→0）
+  const remain = clamp(timeLeft / GAME_TIME, 0, 1);
+  const start = -Math.PI/2;
+
+  // 境界角（時計回りに経過ぶん進む）
+  const border = start + Math.PI*2*(1 - remain);
+
+  // 白い時計板
+  ctx.save();
+  ctx.globalAlpha = 0.96;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r+10, 0, Math.PI*2);
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.fill();
+  ctx.restore();
+
+  // 残り（灰色）：境界から一周分（残りが減るほど灰色が減る）
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, r, border, start + Math.PI*2, false);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(20,20,20,0.55)";
+  ctx.fill();
+  ctx.restore();
+
+  // 外枠
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.strokeStyle = "rgba(30,30,30,0.55)";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // 目盛り
+  ctx.save();
+  ctx.translate(cx, cy);
+  for(let i=0;i<12;i++){
+    ctx.rotate((Math.PI*2)/12);
+    ctx.beginPath();
+    ctx.moveTo(0, -r);
+    ctx.lineTo(0, -r + (i%3===0 ? 10 : 6));
+    ctx.strokeStyle = "rgba(30,30,30,0.55)";
+    ctx.lineWidth = (i%3===0 ? 3 : 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // 残り秒
+  ctx.save();
+  ctx.font = "900 16px system-ui, -apple-system, sans-serif";
+  ctx.fillStyle = "rgba(20,20,20,0.92)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(Math.ceil(timeLeft)), cx, cy + r + 18);
+  ctx.restore();
+}
+
+/* ================= カラス（端反射＋端で狙い寄せ） ================= */
+const crow = { x:-200,y:120, px:0,py:0, vx:600,vy:220, face:1 };
+
+function crowClampReflect(){
+  if(crow.x < EDGE_PAD_X){ crow.x = EDGE_PAD_X; crow.vx = Math.abs(crow.vx); }
+  if(crow.x > w-EDGE_PAD_X){ crow.x = w-EDGE_PAD_X; crow.vx = -Math.abs(crow.vx); }
+
+  const top = SKY_TOP + EDGE_PAD_Y;
+  const bottom = SKY_BOTTOM() - EDGE_PAD_Y;
+  if(crow.y < top){ crow.y = top; crow.vy = Math.abs(crow.vy); }
+  if(crow.y > bottom){ crow.y = bottom; crow.vy = -Math.abs(crow.vy); }
+}
+function crowIsOnEdge(){
+  const top = SKY_TOP + EDGE_PAD_Y + 2;
+  const bottom = SKY_BOTTOM() - EDGE_PAD_Y - 2;
+  const onX = (crow.x <= EDGE_PAD_X+2) || (crow.x >= w-EDGE_PAD_X-2);
+  const onY = (crow.y <= top) || (crow.y >= bottom);
+  return onX || onY;
+}
+function crowOnEdgeTurn(){
+  let target = null;
+  let bestD = Infinity;
+  for(const b of balloons){
+    const d = Math.hypot(b.x - crow.x, b.y - crow.y);
+    if(d < bestD){ bestD = d; target = b; }
+  }
+
+  const baseAngle = Math.atan2(crow.vy, crow.vx) + Math.PI;
+  let aimAngle = baseAngle;
+  if(target){
+    aimAngle = Math.atan2(target.y - crow.y, target.x - crow.x);
+  }
+
+  const blend = 0.30;
+  const angle = baseAngle*(1-blend) + aimAngle*blend + rand(-0.25, 0.25);
+  const sp = CROW_SPEED * rand(0.9, 1.25);
+  crow.vx = Math.cos(angle) * sp;
+  crow.vy = Math.sin(angle) * sp;
+}
+function crowUpdate(dt){
+  crow.px = crow.x; crow.py = crow.y;
+
+  crow.x += crow.vx * dt;
+  crow.y += crow.vy * dt;
+
+  const beforeEdge = crowIsOnEdge();
+  crowClampReflect();
+  const afterEdge = crowIsOnEdge();
+  if(!beforeEdge && afterEdge) crowOnEdgeTurn();
+
+  crow.face = (crow.vx >= 0) ? 1 : -1;
+
+  for(let i=0;i<balloons.length;i++){
+    const b = balloons[i];
+    if(segHit(crow.px, crow.py, crow.x, crow.y, b.x, b.y, b.r + HIT_R)){
+      popBalloon(i, "crow");
+      break;
+    }
+  }
+}
+function drawCrow(){
+  ctx.save();
+  ctx.translate(crow.x, crow.y);
+  ctx.scale(crow.face, 1);
+
+  ctx.fillStyle="#444";
+  ctx.beginPath();
+  ctx.moveTo(-4,-10);
+  ctx.quadraticCurveTo(-50,-34,-96,-18);
+  ctx.quadraticCurveTo(-46,10,-4,10);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.ellipse(0,0,44,28,0,0,Math.PI*2);
+  ctx.fillStyle="#555";
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(40,-12,20,0,Math.PI*2);
+  ctx.fillStyle="#555";
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(40,-16);
+  ctx.rotate(-0.35);
+  ctx.beginPath();
+  ctx.ellipse(0,0,9,6,0,0,Math.PI);
+  ctx.fillStyle="#fff";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(3,1,3,0,Math.PI*2);
+  ctx.fillStyle="#000";
+  ctx.fill();
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.moveTo(50,-11);
+  ctx.lineTo(82,-3);
+  ctx.lineTo(50,4);
+  ctx.closePath();
+  ctx.fillStyle="#333";
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(-44,2);
+  ctx.lineTo(-92,-14);
+  ctx.lineTo(-90,14);
+  ctx.closePath();
+  ctx.fillStyle="#444";
+  ctx.fill();
+
+  ctx.restore();
+}
+
+/* ================= ループ ================= */
+function loop(ts){
+  if(!running) return;
+  if(!lastT) lastT = ts;
+  const dt = (ts - lastT) / 1000;
+  lastT = ts;
+
+  timeLeft -= dt;
+  if(timeLeft <= 0){
+    timeLeft = 0;
+    running = false;
+    showResult();
+    retryBtn.style.display = "block";
+    return;
+  }
+
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0,0,w,h);
+
+  const elapsed = performance.now()/1000;
+
+  for(const b of balloons){
+    updateBalloon(b, dt, elapsed);
+    drawBalloon(b);
+  }
+
+  crowUpdate(dt);
+  drawCrow();
+
+  updateEffects(dt);
+  drawEffects();
+
+  drawClock();
+
+  requestAnimationFrame(loop);
+}
+
+/* ================= スタート/リトライ ================= */
+async function startGame(){
+  await Audio.unlock();
+
+  you = 0;
+  crowScore = 0;
+  combo = 0;
+  mult = 1;
+  lastYouPopAt = -999;
+
+  timeLeft = GAME_TIME;
+  lastT = 0;
+  effects = [];
+
+  resultEl.style.display = "none";
+
+  initBalloons();
+
+  crow.x = rand(EDGE_PAD_X, w-EDGE_PAD_X);
+  crow.y = rand(SKY_TOP+EDGE_PAD_Y, SKY_BOTTOM()-EDGE_PAD_Y);
+  crow.vx = (Math.random()<0.5 ? 1 : -1) * CROW_SPEED * rand(0.9, 1.2);
+  crow.vy = (Math.random()<0.5 ? 1 : -1) * (CROW_SPEED*0.75) * rand(0.7, 1.1);
+
+  updateUI();
+
+  startBtn.style.display = "none";
+  retryBtn.style.display = "none";
+  running = true;
+  requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener("click", startGame);
+retryBtn.addEventListener("click", startGame);
+updateUI();
+</script>
+</body>
+</html>
